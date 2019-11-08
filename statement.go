@@ -20,7 +20,13 @@ For other SQL statements use New:
 		panic(err)
 	}
 */
-type Statement interface{}
+type Statement interface {
+	String() string
+	Args() []interface{}
+	Dest() []interface{}
+	Invalidate()
+	Close()
+}
 
 type statement struct {
 	dialect  Dialect
@@ -61,32 +67,32 @@ func getStmt(d Dialect) *statement {
 	return stmt
 }
 
-func reuseStmt(q *statement) {
-	q.parts = q.parts[:0]
-	if len(q.args) > 0 {
-		for n := range q.args {
-			q.args[n] = nil
+func reuseStmt(stmt *statement) {
+	stmt.parts = stmt.parts[:0]
+	if len(stmt.args) > 0 {
+		for n := range stmt.args {
+			stmt.args[n] = nil
 		}
-		q.args = q.args[:0]
+		stmt.args = stmt.args[:0]
 	}
-	if len(q.dest) > 0 {
-		for n := range q.dest {
-			q.dest[n] = nil
+	if len(stmt.dest) > 0 {
+		for n := range stmt.dest {
+			stmt.dest[n] = nil
 		}
-		q.dest = q.dest[:0]
+		stmt.dest = stmt.dest[:0]
 	}
-	putBuffer(q.buffer)
-	q.buffer = nil
-	if q.sql != nil {
-		putBuffer(q.sql)
+	putBuffer(stmt.buffer)
+	stmt.buffer = nil
+	if stmt.sql != nil {
+		putBuffer(stmt.sql)
 	}
-	q.sql = nil
+	stmt.sql = nil
 
 	// stmtPool.Put(q)
 }
 
 // addChunk adds a clause or expression to a statement.
-func (q *statement) addChunk(pos int, clause, expr string, args []interface{}, sep string) (index int) {
+func (stmt *statement) addChunk(pos int, clause, expr string, args []interface{}, sep string) (index int) {
 	return index
 }
 
@@ -138,4 +144,74 @@ Use New for special cases like this:
 */
 func New(verb string, args ...interface{}) Statement {
 	return selectedDialect.New(verb, args...)
+}
+
+// String method builds and returns an SQL statement.
+func (stmt *statement) String() string {
+	if stmt.sql == nil {
+		var argNo int = 1
+		// Build a query
+		buf := getBuffer()
+		stmt.sql = buf
+
+		pos := 0
+		for n, part := range stmt.parts {
+			// Separate clauses with spaces
+			if n > 0 && part.position > pos {
+				buf.Write(space)
+			}
+			s := stmt.buffer.B[part.bufLow:part.bufHigh]
+			if part.argLen > 0 && stmt.dialect == PostgreSQL {
+				argNo, _ = writePostgresql(argNo, s, buf)
+			} else {
+				buf.Write(s)
+			}
+			pos = part.position
+		}
+	}
+	return bufferToString(&stmt.sql.B)
+}
+
+/*
+Args returns the list of arguments to be passed to
+database driver for statement execution.
+Do not access a slice returned by this method after Stmt is closed.
+An array, a returned slice points to, can be altered by any method that
+adds a clause or an expression with arguments.
+Make sure to make a copy of the returned slice if you need to preserve it.
+*/
+func (stmt *statement) Args() []interface{} {
+	return stmt.args
+}
+
+/*
+Dest returns a list of value pointers passed via To method calls.
+The order matches the constructed SQL statement.
+Do not access a slice returned by this method after Stmt is closed.
+Note that an array, a returned slice points to, can be altered by To method
+calls.
+Make sure to make a copy if you need to preserve a slice returned by this method.
+*/
+func (stmt *statement) Dest() []interface{} {
+	return stmt.dest
+}
+
+/*
+Invalidate forces a rebuild on next query execution.
+Most likely you don't need to call this method directly.
+*/
+func (stmt *statement) Invalidate() {
+	if stmt.sql != nil {
+		putBuffer(stmt.sql)
+		stmt.sql = nil
+	}
+}
+
+/*
+Close puts buffers and other objects allocated to build an SQL statement
+back to pool for reuse by other Stmt instances.
+Stmt instance should not be used after Close method call.
+*/
+func (stmt *statement) Close() {
+	reuseStmt(stmt)
 }
