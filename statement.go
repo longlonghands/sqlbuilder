@@ -309,6 +309,26 @@ func (stmt *statement) Close() {
 	reuseStmt(stmt)
 }
 
+// Clone creates a copy of the statement.
+func (stmt *statement) Clone() Statement {
+	newstmt := getStmt(stmt.dialect)
+	if cap(newstmt.parts) < len(stmt.parts) {
+		newstmt.parts = make([]statementPart, len(stmt.parts), len(stmt.parts)+2)
+		copy(stmt.parts, stmt.parts)
+	} else {
+		newstmt.parts = append(stmt.parts, stmt.parts...)
+	}
+	newstmt.args = insertAt(newstmt.args, stmt.args, 0)
+	newstmt.dest = insertAt(newstmt.dest, stmt.dest, 0)
+	newstmt.buffer.Write(stmt.buffer.B)
+	if stmt.sql != nil {
+		newstmt.sql = getBuffer()
+		newstmt.sql.Write(stmt.sql.B)
+	}
+
+	return newstmt
+}
+
 /*
 Select adds a SELECT clause to a statement and/or appends
 an expression that defines columns of a resulting data set.
