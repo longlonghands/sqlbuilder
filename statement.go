@@ -13,9 +13,9 @@ Use one of the following methods to create a SQL statement builder instance:
 For other SQL statements use New:
 	q := sqlbuilder.New("TRUNCATE")
 	for _, table := range tablesToBeEmptied {
-		q.Expr(table)
+		stmt.Expr(table)
 	}
-	err := q.ExecAndClose(ctx, db)
+	err := stmt.ExecAndClose(ctx, db)
 	if err != nil {
 		panic(err)
 	}
@@ -91,8 +91,101 @@ func reuseStmt(stmt *statement) {
 	// stmtPool.Put(q)
 }
 
-// addChunk adds a clause or expression to a statement.
-func (stmt *statement) addChunk(pos int, clause, expr string, args []interface{}, sep string) (index int) {
+// addPart adds a clause or expression to a statement.
+func (stmt *statement) addPart(pos int, clause, expr string, args []interface{}, sep string) (index int) {
+	// Remember the position
+	stmt.position = pos
+
+	argLen := len(args)
+	bufLow := len(stmt.buffer.B)
+	index = len(stmt.parts)
+	argTail := 0
+
+	addNew := true
+	addClause := clause != ""
+
+	// Find the position to insert a chunk to
+loop:
+	for i := index - 1; i >= 0; i-- {
+		chunk := &stmt.parts[i]
+		index = i
+		switch {
+		// See if an existing chunk can be extended
+		case chunk.position == pos:
+			// Do nothing if a clause is already there and no expressions are to be added
+			if expr == "" {
+				// See if arguments are to be updated
+				if argLen > 0 {
+					copy(stmt.args[len(stmt.args)-argTail-chunk.argLen:], args)
+				}
+				return i
+			}
+			// Write a separator
+			if chunk.hasExpr {
+				stmt.buffer.WriteString(sep)
+			} else {
+				stmt.buffer.WriteString(" ")
+			}
+			if chunk.bufHigh == bufLow {
+				// Do not add a chunk
+				addNew = false
+				// UpdateUser the existing one
+				stmt.buffer.WriteString(expr)
+				chunk.argLen += argLen
+				chunk.bufHigh = len(stmt.buffer.B)
+				chunk.hasExpr = true
+			} else {
+				// Do not add a clause
+				addClause = false
+				index = i + 1
+			}
+			break loop
+		// No existing chunks of this type
+		case chunk.position < pos:
+			index = i + 1
+			break loop
+		default:
+			argTail += chunk.argLen
+		}
+	}
+
+	if addNew {
+		// Insert a new chunk
+		if addClause {
+			stmt.buffer.WriteString(clause)
+			if expr != "" {
+				stmt.buffer.WriteString(" ")
+			}
+		}
+		stmt.buffer.WriteString(expr)
+
+		if cap(stmt.parts) == len(stmt.parts) {
+			chunks := make([]statementPart, len(stmt.parts), cap(stmt.parts)*2)
+			copy(chunks, stmt.parts)
+			stmt.parts = chunks
+		}
+
+		chunk := statementPart{
+			position: pos,
+			bufLow:   bufLow,
+			bufHigh:  len(stmt.buffer.B),
+			argLen:   argLen,
+			hasExpr:  expr != "",
+		}
+
+		stmt.parts = append(stmt.parts, chunk)
+		if index < len(stmt.parts)-1 {
+			copy(stmt.parts[index+1:], stmt.parts[index:])
+			stmt.parts[index] = chunk
+		}
+	}
+
+	// Insert query arguments
+	if argLen > 0 {
+		stmt.args = insertAt(stmt.args, args, len(stmt.args)-argTail)
+	}
+	stmt.Invalidate()
+
 	return index
 }
 
@@ -134,10 +227,10 @@ common SQL statements.
 Use New for special cases like this:
 	q := sqlbuilder.New("TRANCATE")
 	for _, table := range tableNames {
-		q.Expr(table)
+		stmt.Expr(table)
 	}
-	q.Clause("RESTART IDENTITY")
-	err := q.ExecAndClose(ctx, db)
+	stmt.Clause("RESTART IDENTITY")
+	err := stmt.ExecAndClose(ctx, db)
 	if err != nil {
 		panic(err)
 	}
@@ -214,4 +307,69 @@ Stmt instance should not be used after Close method call.
 */
 func (stmt *statement) Close() {
 	reuseStmt(stmt)
+}
+
+/*
+Select adds a SELECT clause to a statement and/or appends
+an expression that defines columns of a resulting data set.
+	stmt := sqlbuilder.Select("DISTINCT field1, field2").From("table")
+Select can be called multiple times to add more columns:
+	stmt := sqlbuilder.From("table").Select("field1")
+	if needField2 {
+		stmt.Select("field2")
+	}
+	// ...
+	stmt.Close()
+Use To method to bind variables to selected columns:
+	var (
+		num  int
+		name string
+	)
+	res := sqlbuilder.From("table").
+		Select("num, name").To(&num, &name).
+		Where("id = ?", 42).
+		QueryRowAndClose(ctx, db)
+	if err != nil {
+		panic(err)
+	}
+Note that a SELECT statement can also be started by a From method call.
+*/
+func (stmt *statement) Select(expr string, args ...interface{}) Statement {
+	stmt.addPart(posSelect, "SELECT", expr, args, ", ")
+	return stmt
+}
+
+/*
+UpdateUser adds UPDATE clause to a statement.
+	stmt.UpdateUser("table")
+tableName argument can be a SQL fragment:
+	stmt.UpdateUser("ONLY table AS t")
+*/
+func (stmt *statement) Update(tableName string) Statement {
+	stmt.addPart(posUpdate, "UPDATE", tableName, nil, ", ")
+	return stmt
+}
+
+/*
+InsertInto adds INSERT INTO clause to a statement.
+	stmt.InsertInto("table")
+tableName argument can be a SQL fragment:
+	stmt.InsertInto("table AS t")
+*/
+func (stmt *statement) InsertInto(tableName string) Statement {
+	stmt.addPart(posInsert, "INSERT INTO", tableName, nil, ", ")
+	stmt.addPart(posInsertFields-1, "(", "", nil, "")
+	stmt.addPart(posValues-1, ") VALUES (", "", nil, "")
+	stmt.addPart(posValues+1, ")", "", nil, "")
+	stmt.position = posInsertFields
+	return stmt
+}
+
+/*
+DeleteFrom adds DELETE clause to a statement.
+	stmt.DeleteFrom("table").Where("id = ?", id)
+*/
+func (stmt *statement) DeleteFrom(tableName string) Statement {
+	stmt.addPart(posDelete, "DELETE FROM", tableName, nil, ", ")
+	return stmt
 }

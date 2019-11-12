@@ -30,9 +30,9 @@ Use From, Select, InsertInto or DeleteFrom methods to create
 an instance of an SQL statement builder for common statements.
 */
 func (b Dialect) New(verb string, args ...interface{}) Statement {
-	q := getStmt(b)
-	q.addChunk(posSelect, verb, "", args, ", ")
-	return q
+	stmt := getStmt(b)
+	stmt.addPart(posSelect, verb, "", args, ", ")
+	return stmt
 }
 
 // writePostgresql function copies s into buf and replaces ? placeholders with $1, $2...
