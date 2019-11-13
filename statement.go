@@ -393,3 +393,84 @@ func (stmt *statement) DeleteFrom(tableName string) Statement {
 	stmt.addPart(posDelete, "DELETE FROM", tableName, nil, ", ")
 	return stmt
 }
+
+/*
+Set method:
+- Adds a column to the list of columns and a value to VALUES clause of INSERT statement,
+- Adds an item to SET clause of an UPDATE statement.
+	stmt.Set("field", 32)
+For INSERT statements a call to Set method generates
+both the list of columns and values to be inserted:
+	q := sqlf.InsertInto("table").Set("field", 42)
+produces
+	INSERT INTO table (field) VALUES (42)
+*/
+func (stmt *statement) Set(field string, value interface{}) Statement {
+	return stmt.SetExpr(field, "?", value)
+}
+
+/*
+SetExpr is an extended version of a Set method.
+	stmt.SetExpr("field", "field + 1")
+	stmt.SetExpr("field", "? + ?", 31, 11)
+*/
+func (stmt *statement) SetExpr(field, expr string, args ...interface{}) Statement {
+	// TODO How to handle both INSERT ... VALUES and SET in ON DUPLICATE KEY UPDATE?
+	p := 0
+	for _, chunk := range stmt.parts {
+		if chunk.position == posInsert || chunk.position == posUpdate {
+			p = chunk.position
+			break
+		}
+	}
+
+	switch p {
+	case posInsert:
+		stmt.addPart(posInsertFields, "", field, nil, ", ")
+		stmt.addPart(posValues, "", expr, args, ", ")
+	case posUpdate:
+		stmt.addPart(posSet, "SET", field+"="+expr, args, ", ")
+	}
+	return stmt
+}
+
+// From adds a FROM clause to statement.
+func (stmt *statement) From(expr string, args ...interface{}) Statement {
+	stmt.addPart(posFrom, "FROM", expr, args, ", ")
+	return stmt
+}
+
+/*
+Where adds a filter:
+	sqlf.From("users").
+		Select("id, name").
+		Where("email = ?", email).
+		Where("is_active = 1")
+*/
+func (stmt *statement) Where(expr string, args ...interface{}) Statement {
+	stmt.addPart(posWhere, "WHERE", expr, args, " AND ")
+	return stmt
+}
+
+/*
+In adds IN expression to the current filter.
+In method must be called after a Where method call.
+*/
+func (stmt *statement) In(args ...interface{}) Statement {
+	buf := bytebufferpool.Get()
+	buf.WriteString("IN (")
+	l := len(args) - 1
+	for i := range args {
+		if i < l {
+			buf.Write(placeholderComma)
+		} else {
+			buf.Write(placeholder)
+		}
+	}
+	buf.WriteString(")")
+
+	stmt.addPart(posWhere, "", bufferToString(&buf.B), args, " ")
+
+	bytebufferpool.Put(buf)
+	return stmt
+}
