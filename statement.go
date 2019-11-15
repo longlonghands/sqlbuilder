@@ -1,6 +1,10 @@
 package sqlbuilder
 
-import "github.com/valyala/bytebufferpool"
+import (
+	"strings"
+
+	"github.com/valyala/bytebufferpool"
+)
 
 /*
 Statement provides a set of helper methods for SQL statement building and execution.
@@ -26,6 +30,28 @@ type Statement interface {
 	Dest() []interface{}
 	Invalidate()
 	Close()
+	Clone() Statement
+	Select(expr string, args ...interface{}) Statement
+	Update(tableName string) Statement
+	InsertInto(tableName string) Statement
+	DeleteFrom(tableName string) Statement
+	Set(field string, value interface{}) Statement
+	SetExpr(field, expr string, args ...interface{}) Statement
+	From(expr string, args ...interface{}) Statement
+	Where(expr string, args ...interface{}) Statement
+	In(args ...interface{}) Statement
+	OrderBy(expr ...string) Statement
+	GroupBy(expr string) Statement
+	Having(expr string, args ...interface{}) Statement
+	Limit(limit interface{}) Statement
+	Offset(offset interface{}) Statement
+
+	Paginate(page, pageSize int) Statement
+
+	Join(table, on string) Statement
+	LeftJoin(table, on string) Statement
+	RightJoin(table, on string) Statement
+	FullJoin(table, on string) Statement
 }
 
 type statement struct {
@@ -472,5 +498,35 @@ func (stmt *statement) In(args ...interface{}) Statement {
 	stmt.addPart(posWhere, "", bufferToString(&buf.B), args, " ")
 
 	bytebufferpool.Put(buf)
+	return stmt
+}
+
+// OrderBy adds the ORDER BY clause to SELECT statement
+func (stmt *statement) OrderBy(expr ...string) Statement {
+	stmt.addPart(posOrderBy, "ORDER BY", strings.Join(expr, ", "), nil, ", ")
+	return stmt
+}
+
+// GroupBy adds the GROUP BY clause to SELECT statement
+func (stmt *statement) GroupBy(expr string) Statement {
+	stmt.addPart(posGroupBy, "GROUP BY", expr, nil, ", ")
+	return stmt
+}
+
+// Having adds the HAVING clause to SELECT statement
+func (stmt *statement) Having(expr string, args ...interface{}) Statement {
+	stmt.addPart(posHaving, "HAVING", expr, args, " AND ")
+	return stmt
+}
+
+// Limit adds a limit on number of returned rows
+func (stmt *statement) Limit(limit interface{}) Statement {
+	stmt.addPart(posLimit, "LIMIT ?", "", []interface{}{limit}, "")
+	return stmt
+}
+
+// Offset adds a limit on number of returned rows
+func (stmt *statement) Offset(offset interface{}) Statement {
+	stmt.addPart(posOffset, "OFFSET ?", "", []interface{}{offset}, "")
 	return stmt
 }
