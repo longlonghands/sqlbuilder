@@ -15,7 +15,7 @@ Use one of the following methods to create a SQL statement builder instance:
 	sqlbuilder.UpdateUser("table")
 	sqlbuilder.DeleteFrom("table")
 For other SQL statements use New:
-	q := sqlbuilder.New("TRUNCATE")
+	stmt := sqlbuilder.New("TRUNCATE")
 	for _, table := range tablesToBeEmptied {
 		stmt.Expr(table)
 	}
@@ -26,6 +26,8 @@ For other SQL statements use New:
 */
 type Statement interface {
 	String() string
+	GetDialect() Dialect
+	SetDialect(d Dialect)
 	Args() []interface{}
 	Dest() []interface{}
 	Invalidate()
@@ -114,7 +116,7 @@ func reuseStmt(stmt *statement) {
 	}
 	stmt.sql = nil
 
-	// stmtPool.Put(q)
+	// stmtPool.Put(stmt)
 }
 
 // addPart adds a clause or expression to a statement.
@@ -215,6 +217,22 @@ loop:
 	return index
 }
 
+// join adds a join clause to a SELECT statement
+func (stmt *statement) join(joinType, table, on string) (index int) {
+	buf := bytebufferpool.Get()
+	buf.WriteString(joinType)
+	buf.WriteString(table)
+	buf.Write(joinOn)
+	buf.WriteString(on)
+	buf.WriteByte(')')
+
+	index = stmt.addPart(posFrom, "", bufferToString(&buf.B), nil, " ")
+
+	bytebufferpool.Put(buf)
+
+	return index
+}
+
 var (
 	space            = []byte{' '}
 	placeholder      = []byte{'?'}
@@ -251,7 +269,7 @@ New initializes a SQL statement builder instance with an arbitrary verb.
 Use sqlbuilder.Select(), sqlbuilder.InsertInto(), sqlbuilder.DeleteFrom() to start
 common SQL statements.
 Use New for special cases like this:
-	q := sqlbuilder.New("TRANCATE")
+	stmt := sqlbuilder.New("TRANCATE")
 	for _, table := range tableNames {
 		stmt.Expr(table)
 	}
@@ -289,6 +307,14 @@ func (stmt *statement) String() string {
 		}
 	}
 	return bufferToString(&stmt.sql.B)
+}
+
+func (stmt *statement) SetDialect(value Dialect) {
+	stmt.dialect = value
+}
+
+func (stmt *statement) GetDialect() Dialect {
+	return stmt.dialect
 }
 
 /*
@@ -427,7 +453,7 @@ Set method:
 	stmt.Set("field", 32)
 For INSERT statements a call to Set method generates
 both the list of columns and values to be inserted:
-	q := sqlf.InsertInto("table").Set("field", 42)
+	stmt := sqlbuilder.InsertInto("table").Set("field", 42)
 produces
 	INSERT INTO table (field) VALUES (42)
 */
@@ -468,7 +494,7 @@ func (stmt *statement) From(expr string, args ...interface{}) Statement {
 
 /*
 Where adds a filter:
-	sqlf.From("users").
+	sqlbuilder.From("users").
 		Select("id, name").
 		Where("email = ?", email).
 		Where("is_active = 1")
@@ -528,5 +554,152 @@ func (stmt *statement) Limit(limit interface{}) Statement {
 // Offset adds a limit on number of returned rows
 func (stmt *statement) Offset(offset interface{}) Statement {
 	stmt.addPart(posOffset, "OFFSET ?", "", []interface{}{offset}, "")
+	return stmt
+}
+
+/*
+Join adds an INNERT JOIN clause to SELECT statement
+*/
+func (stmt *statement) Join(table, on string) Statement {
+	stmt.join("JOIN ", table, on)
+	return stmt
+}
+
+/*
+LeftJoin adds a LEFT OUTER JOIN clause to SELECT statement
+*/
+func (stmt *statement) LeftJoin(table, on string) Statement {
+	stmt.join("LEFT JOIN ", table, on)
+	return stmt
+}
+
+/*
+RightJoin adds a RIGHT OUTER JOIN clause to SELECT statement
+*/
+func (stmt *statement) RightJoin(table, on string) Statement {
+	stmt.join("RIGHT JOIN ", table, on)
+	return stmt
+}
+
+/*
+FullJoin adds a FULL OUTER JOIN clause to SELECT statement
+*/
+func (stmt *statement) FullJoin(table, on string) Statement {
+	stmt.join("FULL JOIN ", table, on)
+	return stmt
+}
+
+// Paginate provides an easy way to set both offset and limit
+func (stmt *statement) Paginate(page, pageSize int) Statement {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 1
+	}
+	if page > 1 {
+		stmt.Offset((page - 1) * pageSize)
+	}
+	stmt.Limit(pageSize)
+	return stmt
+}
+
+// Returning adds a RETURNING clause to a statement
+func (stmt *statement) Returning(expr string) Statement {
+	stmt.addPart(posReturning, "RETURNING", expr, nil, ", ")
+	return stmt
+}
+
+// With prepends a statement with an WITH clause.
+// With method calls a Close method of a given query, so
+// make sure not to reuse it afterwards.
+func (stmt *statement) With(queryName string, query Statement) Statement {
+	stmt.addPart(posWith, "WITH", "", nil, "")
+	return stmt.SubQuery(queryName+" AS (", ")", query)
+}
+
+/*
+Expr appends an expression to the most recently added clause.
+Expressions are separated with commas.
+*/
+func (stmt *statement) Expr(expr string, args ...interface{}) Statement {
+	stmt.addPart(stmt.position, "", expr, args, ", ")
+	return stmt
+}
+
+/*
+SubQuery appends a sub query expression to a current clause.
+SubQuery method call closes the Stmt passed as query parameter.
+Do not reuse it afterwards.
+*/
+func (stmt *statement) SubQuery(prefix, suffix string, query Statement) Statement {
+	delimiter := ", "
+	if stmt.position == posWhere {
+		delimiter = " AND "
+	}
+	index := stmt.addPart(stmt.position, "", prefix, query.Args(), delimiter)
+	chunk := &stmt.parts[index]
+	// Make sure subquery is not dialect-specific.
+	if query.GetDialect() != DefaultDialect {
+		query.SetDialect(DefaultDialect)
+		query.Invalidate()
+	}
+	stmt.buffer.WriteString(query.String())
+	stmt.buffer.WriteString(suffix)
+	chunk.bufHigh = stmt.buffer.Len()
+	// Close the subquery
+	query.Close()
+
+	return stmt
+}
+
+/*
+Union adds a UNION clause to the statement.
+all argument controls if UNION ALL or UNION clause
+is to be constructed. Use UNION ALL if possible to
+get faster queries.
+*/
+func (stmt *statement) Union(all bool, query Statement) Statement {
+	p := posUnion
+	if len(stmt.parts) > 0 {
+		last := (&stmt.parts[len(stmt.parts)-1]).position
+		if last >= p {
+			p = last + 1
+		}
+	}
+	var index int
+	if all {
+		index = stmt.addPart(p, "UNION ALL ", "", query.Args(), "")
+	} else {
+		index = stmt.addPart(p, "UNION ", "", query.Args(), "")
+	}
+	chunk := &stmt.parts[index]
+	// Make sure subquery is not dialect-specific.
+	if query.GetDialect() != DefaultDialect {
+		query.SetDialect(DefaultDialect)
+		query.Invalidate()
+	}
+	stmt.buffer.WriteString(query.String())
+	chunk.bufHigh = stmt.buffer.Len()
+	// Close the subquery
+	query.Close()
+
+	return stmt
+}
+
+/*
+Clause appends a raw SQL fragment to the statement.
+
+Use it to add a raw SQL fragment like ON CONFLICT, ON DUPLICATE KEY, WINDOW, etc.
+
+An SQL fragment added via Clause method appears after the last clause previously
+added. If called first, Clause method prepends a statement with a raw SQL.
+*/
+func (stmt *statement) Clause(expr string, args ...interface{}) Statement {
+	p := posStart
+	if len(stmt.parts) > 0 {
+		p = (&stmt.parts[len(stmt.parts)-1]).position + 10
+	}
+	stmt.addPart(p, expr, "", args, ", ")
 	return stmt
 }
