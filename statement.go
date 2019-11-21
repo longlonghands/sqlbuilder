@@ -280,7 +280,82 @@ Use New for special cases like this:
 	}
 */
 func New(verb string, args ...interface{}) Statement {
-	return selectedDialect.New(verb, args...)
+	stmt := getStmt(selectedDialect)
+	stmt.addPart(posSelect, verb, "", args, ", ")
+	return stmt
+}
+
+/*
+From starts a SELECT statement.
+	var cnt int64
+	err := sqlbuilder.From("table").
+		Select("COUNT(*)").To(&cnt)
+		Where("value >= ?", 42).
+		QueryRowAndClose(ctx, db)
+	if err != nil {
+		panic(err)
+	}
+*/
+func From(expr string, args ...interface{}) Statement {
+	stmt := getStmt(selectedDialect)
+	return stmt.From(expr, args...)
+}
+
+/*
+Select starts a SELECT statement.
+	var cnt int64
+	err := sqlbuilder.Select("COUNT(*)").To(&cnt).
+		From("table").
+		Where("value >= ?", 42).
+		QueryRowAndClose(ctx, db)
+	if err != nil {
+		panic(err)
+	}
+Note that From method can also be used to start a SELECT statement.
+*/
+func Select(expr string, args ...interface{}) Statement {
+	stmt := getStmt(selectedDialect)
+	return stmt.Select(expr, args...)
+}
+
+/*
+Update starts an UPDATE statement.
+	err := sqlbuilder.Update("table").
+		Set("field1", "newvalue").
+		Where("id = ?", 42).
+		ExecAndClose(ctx, db)
+	if err != nil {
+		panic(err)
+	}
+*/
+func Update(tableName string) Statement {
+	stmt := getStmt(selectedDialect)
+	return stmt.Update(tableName)
+}
+
+/*
+InsertInto starts an INSERT statement.
+	var newId int64
+	err := sqlbuilder.InsertInto("table").
+		Set("field", value).
+		Returning("id").To(&newId).
+		ExecAndClose(ctx, db)
+	if err != nil {
+		panic(err)
+	}
+*/
+func InsertInto(tableName string) Statement {
+	stmt := getStmt(selectedDialect)
+	return stmt.InsertInto(tableName)
+}
+
+/*
+DeleteFrom starts a DELETE statement.
+	err := sqlbuilder.DeleteFrom("table").Where("id = ?", id).ExecAndClose(ctx, db)
+*/
+func DeleteFrom(tableName string) Statement {
+	stmt := getStmt(selectedDialect)
+	return stmt.DeleteFrom(tableName)
 }
 
 // String method builds and returns an SQL statement.

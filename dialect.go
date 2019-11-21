@@ -24,17 +24,6 @@ func SetDialect(dialect Dialect) {
 	atomic.StoreUint32((*uint32)(&selectedDialect), uint32(dialect))
 }
 
-/*
-New starts an SQL statement with an sql verb.
-Use From, Select, InsertInto or DeleteFrom methods to create
-an instance of an SQL statement builder for common statements.
-*/
-func (b Dialect) New(verb string, args ...interface{}) Statement {
-	stmt := getStmt(b)
-	stmt.addPart(posSelect, verb, "", args, ", ")
-	return stmt
-}
-
 // writePostgresql function copies s into buf and replaces ? placeholders with $1, $2...
 func writePostgresql(argNo int, s []byte, buf *bytebufferpool.ByteBuffer) (int, error) {
 	var err error
