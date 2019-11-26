@@ -25,42 +25,217 @@ For other SQL statements use New:
 	}
 */
 type Statement interface {
+	// String method builds and returns an SQL statement.
 	String() string
+
+	// GetDialect returns selected dialect in the library
 	GetDialect() Dialect
-	SetDialect(d Dialect)
+
+	// SetDialect sets value as selected dialect in the library
+	SetDialect(value Dialect)
+
+	/*
+		Args returns the list of arguments to be passed to
+		database driver for statement execution.
+		Do not access a slice returned by this method after Stmt is closed.
+		An array, a returned slice points to, can be altered by any method that
+		adds a clause or an expression with arguments.
+		Make sure to make a copy of the returned slice if you need to preserve it.
+	*/
 	Args() []interface{}
+
+	/*
+		Dest returns a list of value pointers passed via To method calls.
+		The order matches the constructed SQL statement.
+		Do not access a slice returned by this method after Stmt is closed.
+		Note that an array, a returned slice points to, can be altered by To method
+		calls.
+		Make sure to make a copy if you need to preserve a slice returned by this method.
+	*/
 	Dest() []interface{}
+
+	/*
+		Invalidate forces a rebuild on next query execution.
+		Most likely you don't need to call this method directly.
+	*/
 	Invalidate()
+
+	/*
+		Close puts buffers and other objects allocated to build an SQL statement
+		back to pool for reuse by other Stmt instances.
+		Stmt instance should not be used after Close method call.
+	*/
 	Close()
+
+	// Clone creates a copy of the statement.
 	Clone() Statement
+
+	/*
+		Select adds a SELECT clause to a statement and/or appends
+		an expression that defines columns of a resulting data set.
+			stmt := sqlbuilder.Select("DISTINCT field1, field2").From("table")
+		Select can be called multiple times to add more columns:
+			stmt := sqlbuilder.From("table").Select("field1")
+			if needField2 {
+				stmt.Select("field2")
+			}
+			// ...
+			stmt.Close()
+		Use To method to bind variables to selected columns:
+			var (
+				num  int
+				name string
+			)
+			res := sqlbuilder.From("table").
+				Select("num, name").To(&num, &name).
+				Where("id = ?", 42).
+				QueryRowAndClose(ctx, db)
+			if err != nil {
+				panic(err)
+			}
+		Note that a SELECT statement can also be started by a From method call.
+	*/
 	Select(expr string, args ...interface{}) Statement
+
+	/*
+		UpdateUser adds UPDATE clause to a statement.
+			stmt.UpdateUser("table")
+		tableName argument can be a SQL fragment:
+			stmt.UpdateUser("ONLY table AS t")
+	*/
 	Update(tableName string) Statement
+
+	/*
+		InsertInto adds INSERT INTO clause to a statement.
+			stmt.InsertInto("table")
+		tableName argument can be a SQL fragment:
+			stmt.InsertInto("table AS t")
+	*/
 	InsertInto(tableName string) Statement
+
+	/*
+		DeleteFrom adds DELETE clause to a statement.
+			stmt.DeleteFrom("table").Where("id = ?", id)
+	*/
 	DeleteFrom(tableName string) Statement
+
+	/*
+		Set method:
+		- Adds a column to the list of columns and a value to VALUES clause of INSERT statement,
+		- Adds an item to SET clause of an UPDATE statement.
+			stmt.Set("field", 32)
+		For INSERT statements a call to Set method generates
+		both the list of columns and values to be inserted:
+			stmt := sqlbuilder.InsertInto("table").Set("field", 42)
+		produces
+			INSERT INTO table (field) VALUES (42)
+	*/
 	Set(field string, value interface{}) Statement
+
+	/*
+		SetExpr is an extended version of a Set method.
+			stmt.SetExpr("field", "field + 1")
+			stmt.SetExpr("field", "? + ?", 31, 11)
+	*/
 	SetExpr(field, expr string, args ...interface{}) Statement
+
+	/*
+		From starts a SELECT statement.
+			var cnt int64
+			err := sqlbuilder.From("table").
+				Select("COUNT(*)").To(&cnt)
+				Where("value >= ?", 42).
+				QueryRowAndClose(ctx, db)
+			if err != nil {
+				panic(err)
+			}
+	*/
 	From(expr string, args ...interface{}) Statement
+
+	/*
+		Where adds a filter:
+			sqlbuilder.From("users").
+				Select("id, name").
+				Where("email = ?", email).
+				Where("is_active = 1")
+	*/
 	Where(expr string, args ...interface{}) Statement
+
+	/*
+		In adds IN expression to the current filter.
+		In method must be called after a Where method call.
+	*/
 	In(args ...interface{}) Statement
+
+	// OrderBy adds the ORDER BY clause to SELECT statement
 	OrderBy(expr ...string) Statement
+
+	// GroupBy adds the GROUP BY clause to SELECT statement
 	GroupBy(expr string) Statement
+
+	// Having adds the HAVING clause to SELECT statement
 	Having(expr string, args ...interface{}) Statement
+
+	// Limit adds a limit on number of returned rows
 	Limit(limit interface{}) Statement
+
+	// Offset adds a limit on number of returned rows
 	Offset(offset interface{}) Statement
 
 	// Paginate provides an easy way to set both offset and limit
 	Paginate(page, pageSize int) Statement
 
+	// Join adds an INNERT JOIN clause to SELECT statement
 	Join(table, on string) Statement
+
+	// LeftJoin adds a LEFT OUTER JOIN clause to SELECT statement
 	LeftJoin(table, on string) Statement
+
+	// RightJoin adds a RIGHT OUTER JOIN clause to SELECT statement
 	RightJoin(table, on string) Statement
+
+	// FullJoin adds a FULL OUTER JOIN clause to SELECT statement
 	FullJoin(table, on string) Statement
 
+	// Returning adds a RETURNING clause to a statement
 	Returning(expr string) Statement
+
+	/*
+		With prepends a statement with an WITH clause.
+		With method calls a Close method of a given query, so
+		make sure not to reuse it afterwards.
+	*/
 	With(queryName string, query Statement) Statement
+
+	/*
+		Expr appends an expression to the most recently added clause.
+		Expressions are separated with commas.
+	*/
 	Expr(expr string, args ...interface{}) Statement
+
+	/*
+		SubQuery appends a sub query expression to a current clause.
+		SubQuery method call closes the Stmt passed as query parameter.
+		Do not reuse it afterwards.
+	*/
 	SubQuery(prefix, suffix string, query Statement) Statement
+
+	/*
+		Union adds a UNION clause to the statement.
+		all argument controls if UNION ALL or UNION clause
+		is to be constructed. Use UNION ALL if possible to
+		get faster queries.
+	*/
 	Union(all bool, query Statement) Statement
+
+	/*
+		Clause appends a raw SQL fragment to the statement.
+
+		Use it to add a raw SQL fragment like ON CONFLICT, ON DUPLICATE KEY, WINDOW, etc.
+
+		An SQL fragment added via Clause method appears after the last clause previously
+		added. If called first, Clause method prepends a statement with a raw SQL.
+	*/
 	Clause(expr string, args ...interface{}) Statement
 }
 
@@ -80,6 +255,24 @@ type statementPart struct {
 	bufHigh  int
 	hasExpr  bool
 	argLen   int
+}
+
+/*
+WithDialect initializes a SQL statement builder instance with a given Dialect.
+Use WithDialect like this:
+	var cnt int64
+	err := sqlbuilder.WithDialect(sqlbuilder.PostgreSQL).
+		Select("COUNT(*)").To(&cnt).
+		From("table").
+		Where("value >= ?", 42).
+		QueryRowAndClose(ctx, db)
+	if err != nil {
+		panic(err)
+	}
+*/
+func WithDialect(d Dialect) Statement {
+	stmt := getStmt(d)
+	return stmt
 }
 
 /*
