@@ -99,36 +99,36 @@ func (stmt *statement) addPart(pos int, clause, expr string, args []interface{},
 	addNew := true
 	addClause := clause != ""
 
-	// Find the position to insert a chunk to
+	// Find the position to insert a part to
 loop:
 	for i := index - 1; i >= 0; i-- {
-		chunk := &stmt.parts[i]
+		part := &stmt.parts[i]
 		index = i
 		switch {
-		// See if an existing chunk can be extended
-		case chunk.position == pos:
+		// See if an existing part can be extended
+		case part.position == pos:
 			// Do nothing if a clause is already there and no expressions are to be added
 			if expr == "" {
 				// See if arguments are to be updated
 				if argLen > 0 {
-					copy(stmt.args[len(stmt.args)-argTail-chunk.argLen:], args)
+					copy(stmt.args[len(stmt.args)-argTail-part.argLen:], args)
 				}
 				return i
 			}
 			// Write a separator
-			if chunk.hasExpr {
+			if part.hasExpr {
 				stmt.buffer.WriteString(sep)
 			} else {
 				stmt.buffer.WriteString(" ")
 			}
-			if chunk.bufHigh == bufLow {
-				// Do not add a chunk
+			if part.bufHigh == bufLow {
+				// Do not add a part
 				addNew = false
 				// UpdateUser the existing one
 				stmt.buffer.WriteString(expr)
-				chunk.argLen += argLen
-				chunk.bufHigh = len(stmt.buffer.B)
-				chunk.hasExpr = true
+				part.argLen += argLen
+				part.bufHigh = len(stmt.buffer.B)
+				part.hasExpr = true
 			} else {
 				// Do not add a clause
 				addClause = false
@@ -136,16 +136,16 @@ loop:
 			}
 			break loop
 		// No existing chunks of this type
-		case chunk.position < pos:
+		case part.position < pos:
 			index = i + 1
 			break loop
 		default:
-			argTail += chunk.argLen
+			argTail += part.argLen
 		}
 	}
 
 	if addNew {
-		// Insert a new chunk
+		// Insert a new part
 		if addClause {
 			stmt.buffer.WriteString(clause)
 			if expr != "" {
@@ -160,7 +160,7 @@ loop:
 			stmt.parts = chunks
 		}
 
-		chunk := statementPart{
+		part := statementPart{
 			position: pos,
 			bufLow:   bufLow,
 			bufHigh:  len(stmt.buffer.B),
@@ -168,10 +168,10 @@ loop:
 			hasExpr:  expr != "",
 		}
 
-		stmt.parts = append(stmt.parts, chunk)
+		stmt.parts = append(stmt.parts, part)
 		if index < len(stmt.parts)-1 {
 			copy(stmt.parts[index+1:], stmt.parts[index:])
-			stmt.parts[index] = chunk
+			stmt.parts[index] = part
 		}
 	}
 
