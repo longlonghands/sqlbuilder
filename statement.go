@@ -100,6 +100,27 @@ type Statement interface {
 	Select(expr string, args ...interface{}) Statement
 
 	/*
+		To sets a scan target for columns to be selected.
+		Accepts value pointers to be passed to sql.Rows.Scan by
+		Query and QueryRow methods.
+			var (
+				field1 int
+				field2 string
+			)
+			q := sqlf.From("table").
+				Select("field1").To(&field1).
+				Select("field2").To(&field2)
+			err := QueryRow(nil, db)
+			q.Close()
+			if err != nil {
+				// ...
+			}
+		To method MUST be called immediately after Select, Returning or other
+		method that defines data to be returned.
+	*/
+	To(dest ...interface{}) Statement
+
+	/*
 		UpdateUser adds UPDATE clause to a statement.
 			stmt.UpdateUser("table")
 		tableName argument can be a SQL fragment:
@@ -312,6 +333,23 @@ func WithDialect(d Dialect) Statement {
 }
 
 /*
+UsingPostgresql initializes a SQL statement builder instance with a Postgresql Dialect.
+Use UsingPostgresql like this:
+	var cnt int64
+	err := sqlbuilder.UsingPostgresql().
+		Select("COUNT(*)").To(&cnt).
+		From("table").
+		Where("value >= ?", 42).
+		QueryRowAndClose(ctx, db)
+	if err != nil {
+		panic(err)
+	}
+*/
+func UsingPostgresql() Statement {
+	return WithDialect(PostgreSQL)
+}
+
+/*
 New initializes a SQL statement builder instance with an arbitrary verb.
 Use sqlbuilder.Select(), sqlbuilder.InsertInto(), sqlbuilder.DeleteFrom() to start
 common SQL statements.
@@ -363,6 +401,36 @@ Note that From method can also be used to start a SELECT statement.
 func Select(expr string, args ...interface{}) Statement {
 	stmt := getStmt(selectedDialect)
 	return stmt.Select(expr, args...)
+}
+
+/*
+To sets a scan target for columns to be selected.
+Accepts value pointers to be passed to sql.Rows.Scan by
+Query and QueryRow methods.
+	var (
+		field1 int
+		field2 string
+	)
+	q := sqlf.From("table").
+		Select("field1").To(&field1).
+		Select("field2").To(&field2)
+	err := QueryRow(nil, db)
+	q.Close()
+	if err != nil {
+		// ...
+	}
+To method MUST be called immediately after Select, Returning or other
+method that defines data to be returned.
+*/
+func (stmt *statement) To(dest ...interface{}) Statement {
+	if len(dest) > 0 {
+		// As Scan bindings make sense for a single clause per statement,
+		// the order expressions appear in SQL matches the order expressions
+		// are added. So dest value pointers can safely be appended
+		// to the list on every To call.
+		stmt.dest = insertAt(stmt.dest, dest, len(stmt.dest))
+	}
+	return stmt
 }
 
 /*
@@ -486,12 +554,8 @@ func (stmt *statement) Close() {
 // Clone creates a copy of the statement.
 func (stmt *statement) Clone() Statement {
 	newstmt := getStmt(stmt.dialect)
-	if cap(newstmt.parts) < len(stmt.parts) {
-		newstmt.parts = make([]statementPart, len(stmt.parts), len(stmt.parts)+2)
-		copy(stmt.parts, stmt.parts)
-	} else {
-		newstmt.parts = append(stmt.parts, stmt.parts...)
-	}
+	newstmt.parts = append(newstmt.parts, stmt.parts...)
+
 	newstmt.args = insertAt(newstmt.args, stmt.args, 0)
 	newstmt.dest = insertAt(newstmt.dest, stmt.dest, 0)
 	newstmt.buffer.Write(stmt.buffer.B)
